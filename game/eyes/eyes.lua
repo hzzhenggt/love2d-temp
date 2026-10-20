@@ -1,4 +1,30 @@
----@class Eyes Module for drawing and managing interactive eyes
+--[[
+================================================================================
+ eyes/eyes.lua —— 眼睛示例场景主模块
+================================================================================
+ 作用：
+   这是整个 "eyes"（眼睛）示例 demo 的核心模块，负责绘制并管理两只可交互的
+   悬浮眼球。它把场景中的各子系统组装到一起：
+     - background（视差背景）
+     - audio（音频）
+     - fire（跟随鼠标的火焰）
+     - shadows（眼球阴影）
+     - 工具模块：vector / color_utils / state_manager / resource_manager
+
+ 交互与特效概览：
+     - 眼球随正弦波轻微漂浮，并会被"火焰"（鼠标光标）吸引。
+     - 瞳孔以惯性平滑地跟随鼠标。
+     - 鼠标越靠近眼睛，瞳孔越放大、反光越强。
+     - 当鼠标触碰到眼睛时：眼球泛红、出现血丝、整体抖动，并播放音效。
+     - 通过 HTTPS 检测站点是否在线，据此改变虹膜颜色（在线为绿色）。
+
+ 结构说明：
+     1. Eye 类      —— 表示单只眼睛及其全部属性与行为。
+     2. 绘制辅助函数 —— drawEyeBase / drawIris / drawPupil / drawReflection 等。
+     3. eyes 公共模块—— 对外暴露 load / update / draw / unload 等接口。
+================================================================================
+--]]
+
 local background = require("eyes.background")
 local audio = require("eyes.audio")
 local fire = require("eyes.fire")
@@ -8,36 +34,36 @@ local colorUtils = require("eyes.utils.color_utils")
 local StateManager = require("eyes.utils.state_manager")
 local ResourceManager = require("eyes.utils.resource_manager")
 
----@class Eye Represents a single eye with all its properties
----@field x number X-coordinate of the eye
----@field y number Y-coordinate of the eye
----@field size number Size of the eye
----@field fade number Current fade state (0-1)
----@field floatOffset table {x=number, y=number} Current floating offsets
----@field velocity table {x=number, y=number} Current attraction velocity
----@field attractOffset table {x=number, y=number} Current attraction offset
----@field reflection table {intensity=number, x=number, y=number} Reflection properties
----@field pupilDilation number Current pupil dilation value (0-1)
----@field isTouching boolean Whether the eye is currently being touched
----@field pupilTarget table {x=number, y=number} Target position for the pupil
----@field pupilCurrent table {x=number, y=number} Current position of the pupil
+---@class Eye 表示一只眼睛及其全部属性
+---@field x number 眼睛的 X 坐标
+---@field y number 眼睛的 Y 坐标
+---@field size number 眼睛尺寸
+---@field fade number 当前渐变状态（0-1）
+---@field floatOffset table {x=number, y=number} 当前漂浮偏移
+---@field velocity table {x=number, y=number} 当前吸引速度
+---@field attractOffset table {x=number, y=number} 当前吸引偏移
+---@field reflection table {intensity=number, x=number, y=number} 反光属性
+---@field pupilDilation number 当前瞳孔放大值（0-1）
+---@field isTouching boolean 眼睛当前是否正被触碰
+---@field pupilTarget table {x=number, y=number} 瞳孔的目标位置
+---@field pupilCurrent table {x=number, y=number} 瞳孔的当前位置
 local Eye = {}
 Eye.__index = Eye
 
----Creates a new Eye instance
----@param id string Eye identifier (e.g. "left", "right")
----@param x number Initial X position
----@param y number Initial Y position
----@param size number Eye size
----@param phaseX number Initial phase for X floating
----@param phaseY number Initial phase for Y floating
+---创建一个新的 Eye 实例
+---@param id string 眼睛标识（如 "left"、"right"）
+---@param x number 初始 X 位置
+---@param y number 初始 Y 位置
+---@param size number 眼睛尺寸
+---@param phaseX number X 方向漂浮的初始相位
+---@param phaseY number Y 方向漂浮的初始相位
 ---@return Eye
 function Eye.new(id, x, y, size, phaseX, phaseY)
   local self = setmetatable({}, Eye)
   self.id = id
   self.x = x
   self.y = y
-  self.baseX = x -- Store the base position
+  self.baseX = x -- 保存基础位置
   self.baseY = y
   self.size = size
   self.fade = 0
@@ -54,105 +80,105 @@ function Eye.new(id, x, y, size, phaseX, phaseY)
   self.pupilDilation = 0
   self.isTouching = false
 
-  -- Initialize pupil tracking properties
+  -- 初始化瞳孔跟踪属性
   self.pupilTarget = {x = x, y = y}
   self.pupilCurrent = {x = x, y = y}
 
   return self
 end
 
----Updates the position of the eye based on base position and float offset
----@return number x The actual X position
----@return number y The actual Y position
+---根据基础位置与漂浮偏移计算眼睛的实际位置
+---@return number x 实际 X 位置
+---@return number y 实际 Y 位置
 function Eye:getPosition()
   return self.baseX + self.floatOffset.x,
          self.baseY + self.floatOffset.y
 end
 
----Sets the base position for the eye
----@param x number Base X position
----@param y number Base Y position
+---设置眼睛的基础位置
+---@param x number 基础 X 位置
+---@param y number 基础 Y 位置
 function Eye:setBasePosition(x, y)
   self.baseX = x
   self.baseY = y
 end
 
----Updates the floating effect for this eye
----@param dt number Delta time
----@param timeX number Global time X
----@param timeY number Global time Y
----@param config table Floating configuration
----@param attractionPoint table {x=number, y=number} Point of attraction (e.g. mouse/fire position)
+---更新本眼睛的漂浮效果
+---@param dt number 帧间隔时间
+---@param timeX number 全局时间 X
+---@param timeY number 全局时间 Y
+---@param config table 漂浮配置
+---@param attractionPoint table {x=number, y=number} 吸引点（如鼠标/火焰位置）
 function Eye:updateFloating(dt, timeX, timeY, config, attractionPoint)
-  -- Calculate oscillation component (simple harmonic motion)
+  -- 计算振荡分量（简谐运动）
   local floatX = math.sin(timeX + self.phaseX) * config.amplitudeX
   local floatY = math.sin(timeY + self.phaseY) * config.amplitudeY
 
-  -- Update attraction physics (velocity-based movement towards attraction point)
+  -- 更新吸引物理（基于速度向吸引点移动）
   self:updateAttractionPhysics(dt, attractionPoint, config)
 
-  -- Combine oscillation with attraction offset for final position
+  -- 将振荡与吸引偏移合并得到最终位置
   self.floatOffset.x = floatX + self.attractOffset.x
   self.floatOffset.y = floatY + self.attractOffset.y
 end
 
----Updates the attraction physics for the eye
----@param dt number Delta time
----@param attractionPoint table {x=number, y=number} Point of attraction
----@param config table Floating configuration with attraction parameters
+---更新眼睛的吸引物理
+---@param dt number 帧间隔时间
+---@param attractionPoint table {x=number, y=number} 吸引点
+---@param config table 含吸引参数的漂浮配置
 function Eye:updateAttractionPhysics(dt, attractionPoint, config)
-  -- Apply damping to current velocity (simulates drag/friction)
+  -- 对当前速度施加阻尼（模拟拖拽/摩擦）
   self.velocity.x = self.velocity.x * config.dampingFactor
   self.velocity.y = self.velocity.y * config.dampingFactor
 
-  -- Get current eye position
+  -- 获取当前眼睛位置
   local eyeX, eyeY = self:getPosition()
 
-  -- Calculate vector to attraction point
+  -- 计算指向吸引点的向量
   local dx = attractionPoint.x - eyeX
   local dy = attractionPoint.y - eyeY
   local distance = vector.length(dx, dy)
 
-  -- Only apply attraction if within range
+  -- 仅在吸引范围内才施加吸引力
   if distance < config.attractionRange then
-    -- Calculate attraction force (stronger when closer)
+    -- 计算吸引力（越近越强）
     local normalizedX, normalizedY = vector.normalize(dx, dy)
     local strengthFactor = 1.0 - (distance / config.attractionRange)
     local attractForce = strengthFactor * config.attractionStrength
 
-    -- Apply acceleration to velocity
+    -- 将加速度施加到速度上
     local accelerationX = normalizedX * attractForce
     local accelerationY = normalizedY * attractForce
 
     self.velocity.x = self.velocity.x + accelerationX * dt
     self.velocity.y = self.velocity.y + accelerationY * dt
 
-    -- Clamp maximum velocity
+    -- 限制最大速度
     local maxVel = config.maxAttractionForce * dt
     self.velocity.x, self.velocity.y = vector.clamp(
       self.velocity.x, self.velocity.y, maxVel
     )
   end
 
-  -- Update position based on velocity
+  -- 根据速度更新位置
   self.attractOffset.x = self.attractOffset.x + self.velocity.x
   self.attractOffset.y = self.attractOffset.y + self.velocity.y
 end
 
----Checks if a point is over this eye
----@param x number X coordinate of the point
----@param y number Y coordinate of the point
----@return boolean isOver True if the point is over this eye
+---判断某个点是否落在本眼睛范围内
+---@param x number 点的 X 坐标
+---@param y number 点的 Y 坐标
+---@return boolean isOver 若点在眼睛上则为 true
 function Eye:isPointOver(x, y)
   local eyeX, eyeY = self:getPosition()
   local distance = vector.distance(x, y, eyeX, eyeY)
   return distance < self.size
 end
 
----Updates the touch state and fade value
----@param dt number Delta time
----@param isTouched boolean Whether the eye is being touched
----@param fadeSpeed number Speed at which fade changes
+---更新触碰状态与渐变值
+---@param dt number 帧间隔时间
+---@param isTouched boolean 眼睛是否正被触碰
+---@param fadeSpeed number 渐变变化速度
 function Eye:updateTouchState(dt, isTouched, fadeSpeed)
   self.isTouching = isTouched
 
@@ -163,12 +189,12 @@ function Eye:updateTouchState(dt, isTouched, fadeSpeed)
   end
 end
 
----Updates the reflection properties
----@param targetIntensity number Target reflection intensity
----@param x number Reflection X position
----@param y number Reflection Y position
----@param fadeSpeed number Speed at which reflection fades
----@param dt number Delta time
+---更新反光属性
+---@param targetIntensity number 目标反光强度
+---@param x number 反光 X 位置
+---@param y number 反光 Y 位置
+---@param fadeSpeed number 反光渐变速度
+---@param dt number 帧间隔时间
 function Eye:updateReflection(targetIntensity, x, y, fadeSpeed, dt)
   self.reflection.intensity = self.reflection.intensity +
     (targetIntensity - self.reflection.intensity) * dt * fadeSpeed
@@ -176,116 +202,116 @@ function Eye:updateReflection(targetIntensity, x, y, fadeSpeed, dt)
   self.reflection.y = y
 end
 
----Updates the pupil dilation
----@param targetDilation number Target pupil dilation
----@param fadeSpeed number Speed at which dilation changes
----@param dt number Delta time
+---更新瞳孔放大
+---@param targetDilation number 目标瞳孔放大值
+---@param fadeSpeed number 放大变化速度
+---@param dt number 帧间隔时间
 function Eye:updatePupilDilation(targetDilation, fadeSpeed, dt)
   self.pupilDilation = self.pupilDilation +
     (targetDilation - self.pupilDilation) * dt * fadeSpeed
 end
 
----Updates the tracking position of the pupil with inertia
----@param dt number Delta time
----@param targetX number Target X position
----@param targetY number Target Y position
----@param trackingSpeed number How quickly the pupil tracks the target
+---带惯性地更新瞳孔的跟踪位置
+---@param dt number 帧间隔时间
+---@param targetX number 目标 X 位置
+---@param targetY number 目标 Y 位置
+---@param trackingSpeed number 瞳孔跟踪目标的速度
 function Eye:updatePupilTracking(dt, targetX, targetY, trackingSpeed)
-  -- Update the target position
+  -- 更新目标位置
   self.pupilTarget.x = targetX
   self.pupilTarget.y = targetY
 
-  -- Move current position toward target with inertia
+  -- 带惯性地将当前位置向目标移动
   self.pupilCurrent.x = self.pupilCurrent.x +
     (self.pupilTarget.x - self.pupilCurrent.x) * dt * trackingSpeed
   self.pupilCurrent.y = self.pupilCurrent.y +
     (self.pupilTarget.y - self.pupilCurrent.y) * dt * trackingSpeed
 end
 
--- The public module
+-- 对外公开的模块
 local eyes = {
-  -- Configuration
+  -- 基础配置
   eyeSize = 128,
   eyeSpacing = 320,
   shakeAmount = 5,
-  fadeSpeed = 2, -- Speed of color fade transition (units per second)
+  fadeSpeed = 2, -- 颜色渐变过渡速度（单位/秒）
 
-  -- State variables - will be managed by StateManager
+  -- 状态变量——将由 StateManager 管理
   x = 0,
   y = 0,
 
-  -- Eyes collection
+  -- 眼睛集合
   eyes = {},
 
-  -- Floating effect configuration
+  -- 漂浮效果配置
   floating = {
-    -- Base floating speed (radians per second)
+    -- 基础漂浮速度（弧度/秒）
     speedX = 0.9,
     speedY = 0.9,
-    -- Maximum float distance from origin
+    -- 偏离原点的最大漂浮距离
     amplitudeX = 15,
     amplitudeY = 10,
-    -- Fire attraction parameters
-    attractionStrength = 0.08,   -- Reduced from 0.15 for more gradual movement
-    attractionRange = 400,       -- Maximum distance at which attraction has an effect
-    maxAttractionForce = 0.4,    -- Maximum force of attraction per second
-    dampingFactor = 0.85,        -- How quickly attraction velocity decays
+    -- 火焰吸引参数
+    attractionStrength = 0.08,   -- 从 0.15 调低，使移动更平缓
+    attractionRange = 400,       -- 吸引力起作用的最大距离
+    maxAttractionForce = 0.4,    -- 每秒最大吸引力
+    dampingFactor = 0.85,        -- 吸引速度的衰减快慢
   },
 
-  -- Eye tracking configuration
+  -- 眼睛跟踪配置
   tracking = {
-    speed = 15.0,                -- Base speed of eye tracking (higher = faster tracking)
-    touchedSpeedFactor = 0.3,    -- When touched, tracking is this much slower
-    maxTrackingDistance = 0.5,   -- Max percentage of eye size the pupil can move from center
+    speed = 15.0,                -- 眼睛跟踪的基础速度（越大跟踪越快）
+    touchedSpeedFactor = 0.3,    -- 被触碰时跟踪速度乘以该系数（变慢）
+    maxTrackingDistance = 0.5,   -- 瞳孔可偏离中心的最大距离（占眼睛尺寸的比例）
   },
 
-  -- Reflection state for fire effects
+  -- 火焰反光状态
   reflection = {
-    fadeSpeed = 3,      -- How quickly reflection fades in/out
-    maxIntensity = 0.9, -- Maximum reflection intensity (increased for visibility)
-    minDistance = 80,   -- Minimum distance for reflection to appear
-    maxDistance = 350,  -- Distance at which reflection is at minimum intensity
-    baseSize = 0.07     -- Base size of reflection as fraction of eye size (smaller)
+    fadeSpeed = 3,      -- 反光淡入/淡出的快慢
+    maxIntensity = 0.9, -- 最大反光强度（为提升可见度而调高）
+    minDistance = 80,   -- 出现反光的最小距离
+    maxDistance = 350,  -- 反光强度降至最低时的距离
+    baseSize = 0.07     -- 反光基础尺寸（占眼睛尺寸的比例，较小）
   },
 
-  -- Pupil dilation state (responds to fire proximity)
+  -- 瞳孔放大状态（随火焰靠近而变化）
   pupilDilation = {
-    fadeSpeed = 2.5,       -- Speed of dilation transitions
-    maxDilation = 0.30,    -- Maximum additional size factor (30% larger)
-    minDistance = 100,     -- Distance at which maximum dilation occurs
-    maxDistance = 400,     -- Distance at which dilation begins
+    fadeSpeed = 2.5,       -- 放大过渡速度
+    maxDilation = 0.30,    -- 额外的最大放大系数（放大 30%）
+    minDistance = 100,     -- 达到最大放大的距离
+    maxDistance = 400,     -- 开始出现放大的距离
   },
 
-  -- Blood veins texture
+  -- 血丝纹理
   bloodVeinsTexture = nil,
 
-  -- Eye textures
+  -- 眼睛纹理
   irisTexture = nil,
   pupilTexture = nil,
 
-  -- Eye shading shader
+  -- 眼球着色器
   eyeShader = nil,
 
-  -- Online status
+  -- 在线状态
   isOnline = false,
 
-  -- Resource manager
+  -- 资源管理器
   resources = nil,
 }
 
--- Eye state
+-- 眼睛状态
 eyes.state = {
   touching = false,
 }
 
--- Private functions defined as locals
----Interpolates between two colors based on a factor (0 to 1)
----@param color1 table First color {r, g, b}
----@param color2 table Second color {r, g, b}
----@param factor number Interpolation factor (0 = color1, 1 = color2)
----@return table Interpolated color {r, g, b}
+-- 以下为局部定义的私有函数
+---根据系数（0 到 1）在两个颜色之间插值
+---@param color1 table 第一个颜色 {r, g, b}
+---@param color2 table 第二个颜色 {r, g, b}
+---@param factor number 插值系数（0 = color1，1 = color2）
+---@return table 插值后的颜色 {r, g, b}
 local function interpolateColor(color1, color2, factor)
-  factor = math.max(0, math.min(1, factor)) -- Clamp factor between 0 and 1
+  factor = math.max(0, math.min(1, factor)) -- 将系数限制在 0 到 1 之间
   return {
     color1[1] + (color2[1] - color1[1]) * factor,
     color1[2] + (color2[2] - color1[2]) * factor,
@@ -293,13 +319,13 @@ local function interpolateColor(color1, color2, factor)
   }
 end
 
----Calculates the eye positions based on window dimensions
----@param windowWidth number Width of the window
----@param windowHeight number Height of the window
----@param eyeSpacing number The spacing between eyes
----@return number leftEyeX The x-coordinate of the left eye
----@return number rightEyeX The x-coordinate of the right eye
----@return number centerY The y-coordinate of both eyes
+---根据窗口尺寸计算两只眼睛的位置
+---@param windowWidth number 窗口宽度
+---@param windowHeight number 窗口高度
+---@param eyeSpacing number 两眼间距
+---@return number leftEyeX 左眼 x 坐标
+---@return number rightEyeX 右眼 x 坐标
+---@return number centerY 两眼共用的 y 坐标
 local function calculateEyePositions(windowWidth, windowHeight, eyeSpacing)
   local centerY = windowHeight / 2
   local leftEyeX = (windowWidth / 2) - (eyeSpacing / 2)
@@ -307,225 +333,225 @@ local function calculateEyePositions(windowWidth, windowHeight, eyeSpacing)
   return leftEyeX, rightEyeX, centerY
 end
 
--- Drawing helper functions
----Draws the base of an eye using a shader for gradient effect
----@param eyeX number X position of the eye
----@param eyeY number Y position of the eye
----@param eyeSize number Size of the eye
----@param eyeColor table {r,g,b} bright color
----@param shadedEyeColor table {r,g,b} shaded color
----@param dirX number X direction to light source
----@param dirY number Y direction to light source
+-- 绘制辅助函数
+---使用着色器绘制眼球底色，实现渐变效果
+---@param eyeX number 眼睛 X 位置
+---@param eyeY number 眼睛 Y 位置
+---@param eyeSize number 眼睛尺寸
+---@param eyeColor table {r,g,b} 亮部颜色
+---@param shadedEyeColor table {r,g,b} 暗部颜色
+---@param dirX number 指向光源的 X 方向
+---@param dirY number 指向光源的 Y 方向
 local function drawEyeBase(eyeX, eyeY, eyeSize, eyeColor, shadedEyeColor, dirX, dirY)
-  -- Calculate offset for highlight position (towards the fire/cursor)
+  -- 计算高光位置的偏移（朝向火焰/光标）
   local highlightOffsetFactor = 0.4
   local highlightX = eyeX + (dirX * eyeSize * highlightOffsetFactor)
   local highlightY = eyeY + (dirY * eyeSize * highlightOffsetFactor)
 
-  -- Send the values to the shader
+  -- 将数值传入着色器
   eyes.eyeShader:send("eyeCenter", {eyeX, eyeY})
   eyes.eyeShader:send("highlightCenter", {highlightX, highlightY})
   eyes.eyeShader:send("eyeSize", eyeSize)
   eyes.eyeShader:send("brightColor", {eyeColor[1], eyeColor[2], eyeColor[3], 1.0})
   eyes.eyeShader:send("shadedColor", {shadedEyeColor[1], shadedEyeColor[2], shadedEyeColor[3], 1.0})
 
-  -- Draw the eye base with shader for gradient effect
+  -- 用着色器绘制眼球底色以实现渐变
   love.graphics.setShader(eyes.eyeShader)
   love.graphics.setColor(1.0, 1.0, 1.0, 1.0)
   love.graphics.circle("fill", eyeX, eyeY, eyeSize)
   love.graphics.setShader()
 end
 
----Draws blood veins on the eye if eye is touched
----@param eyeX number X position of the eye
----@param eyeY number Y position of the eye
----@param eyeSize number Size of the eye
----@param fadeValue number 0-1 fade value for the veins
+---当眼睛被触碰时在其上绘制血丝
+---@param eyeX number 眼睛 X 位置
+---@param eyeY number 眼睛 Y 位置
+---@param eyeSize number 眼睛尺寸
+---@param fadeValue number 血丝的渐变值（0-1）
 local function drawBloodVeins(eyeX, eyeY, eyeSize, fadeValue)
   if not eyes.bloodVeinsTexture or fadeValue <= 0 then return end
 
-  -- Save current blend mode
+  -- 保存当前混合模式
   local prevBlendMode = love.graphics.getBlendMode()
   love.graphics.setBlendMode("alpha")
 
-  -- Calculate scale factor to match eye size
-  -- Original texture is 512x512, so scale to match the eye diameter (2 * eyeSize)
+  -- 计算缩放系数以匹配眼睛尺寸
+  -- 原始纹理为 512x512，故缩放到眼睛直径（2 * eyeSize）
   local scale = (2 * eyeSize) / 512
 
-  -- Draw the texture centered on the eye with alpha based on fade value
+  -- 以基于渐变值的透明度将纹理居中绘制在眼睛上
   love.graphics.setColor(1, 1, 1, fadeValue)
   love.graphics.draw(
     eyes.bloodVeinsTexture,
     eyeX, eyeY,
-    0,                     -- rotation (0 means no rotation)
-    scale, scale,          -- scale X and Y
-    256, 256               -- origin point (center of the 512x512 texture)
+    0,                     -- 旋转（0 表示不旋转）
+    scale, scale,          -- X、Y 方向缩放
+    256, 256               -- 原点（512x512 纹理的中心）
   )
 
-  -- Restore previous blend mode
+  -- 恢复之前的混合模式
   love.graphics.setBlendMode(prevBlendMode)
 end
 
----Calculates the iris and pupil position
----@param eyeX number X position of the eye
----@param eyeY number Y position of the eye
----@param eyeSize number Size of the eye
----@param fadeValue number 0-1 fade value for oscillation
----@param currentPupilX number Current X position of the pupil (for inertia)
----@param currentPupilY number Current Y position of the pupil (for inertia)
----@return number irisX X position of the iris
----@return number irisY Y position of the iris
----@return number pupilX X position of the pupil
----@return number pupilY Y position of the pupil
----@return number angle Direction angle
+---计算虹膜与瞳孔的位置
+---@param eyeX number 眼睛 X 位置
+---@param eyeY number 眼睛 Y 位置
+---@param eyeSize number 眼睛尺寸
+---@param fadeValue number 用于振荡的渐变值（0-1）
+---@param currentPupilX number 瞳孔当前 X 位置（用于惯性）
+---@param currentPupilY number 瞳孔当前 Y 位置（用于惯性）
+---@return number irisX 虹膜 X 位置
+---@return number irisY 虹膜 Y 位置
+---@return number pupilX 瞳孔 X 位置
+---@return number pupilY 瞳孔 Y 位置
+---@return number angle 方向角
 local function calculatePupilPosition(eyeX, eyeY, eyeSize, fadeValue, currentPupilX, currentPupilY)
   local mouseX, mouseY = love.mouse.getPosition()
   local distanceX = mouseX - eyeX
   local distanceY = mouseY - eyeY
 
-  -- Calculate the maximum distance the pupil can move
+  -- 计算瞳孔可移动的最大距离
   local maxDistance = eyeSize * eyes.tracking.maxTrackingDistance
 
-  -- Calculate tracking position
+  -- 计算跟踪位置
   local distance = math.min(math.sqrt(distanceX^2 + distanceY^2), maxDistance)
   local angle = math.atan2(distanceY, distanceX)
 
-  -- Use the current position from the eye's tracking system
+  -- 使用眼睛跟踪系统给出的当前位置
   local trackingX = currentPupilX
   local trackingY = currentPupilY
 
-  -- Calculate oscillation position (where pupil would be when eye is touched)
+  -- 计算振荡位置（眼睛被触碰时瞳孔抖动到的位置）
   local oscillationRange = eyeSize / 16
   local oscillationX = eyeX + love.math.random(-oscillationRange, oscillationRange)
   local oscillationY = eyeY + love.math.random(-oscillationRange, oscillationRange)
 
-  -- Interpolate between tracking and oscillation based on fade value
+  -- 根据渐变值在跟踪位置与振荡位置之间插值
   local irisX = trackingX + (oscillationX - trackingX) * fadeValue
   local irisY = trackingY + (oscillationY - trackingY) * fadeValue
 
-  -- Calculate a subtle additional offset for the pupil
-  local pupilOffsetFactor = 0.10 -- Controls how much extra the pupil moves relative to iris
+  -- 为瞳孔计算一个细微的额外偏移
+  local pupilOffsetFactor = 0.10 -- 控制瞳孔相对虹膜额外移动的幅度
   local subtleDistance = distance * pupilOffsetFactor
 
-  -- Apply the subtle offset to the pupil position
+  -- 将细微偏移应用到瞳孔位置
   local pupilX = irisX + (math.cos(angle) * subtleDistance)
   local pupilY = irisY + (math.sin(angle) * subtleDistance)
 
   return irisX, irisY, pupilX, pupilY, angle
 end
 
----Draws the iris texture
----@param irisX number X position of the iris
----@param irisY number Y position of the iris
----@param eyeSize number Size of the eye
----@param pupilColor table {r,g,b} Color of the pupil
+---绘制虹膜纹理
+---@param irisX number 虹膜 X 位置
+---@param irisY number 虹膜 Y 位置
+---@param eyeSize number 眼睛尺寸
+---@param pupilColor table {r,g,b} 瞳孔颜色
 local function drawIris(irisX, irisY, eyeSize, pupilColor)
   if not eyes.irisTexture then return end
 
-  -- Calculate scale for iris texture (about 140% of the eye size)
+  -- 计算虹膜纹理的缩放（约为眼睛尺寸的 140%）
   local irisScale = (eyeSize * 1.4) / 512
 
-  -- Apply color tinting to iris
+  -- 对虹膜进行颜色染色
   love.graphics.setColor(pupilColor)
   love.graphics.draw(
     eyes.irisTexture,
     irisX, irisY,
-    0,                -- no rotation
+    0,                -- 不旋转
     irisScale, irisScale,
-    256, 256         -- center of 512x512 texture
+    256, 256         -- 512x512 纹理的中心
   )
 end
 
----Draws the pupil texture with dilation
----@param pupilX number X position of the pupil
----@param pupilY number Y position of the pupil
----@param eyeSize number Size of the eye
----@param dilationFactor number 0-1 dilation factor
+---绘制带放大效果的瞳孔纹理
+---@param pupilX number 瞳孔 X 位置
+---@param pupilY number 瞳孔 Y 位置
+---@param eyeSize number 眼睛尺寸
+---@param dilationFactor number 放大系数（0-1）
 local function drawPupil(pupilX, pupilY, eyeSize, dilationFactor)
   if not eyes.pupilTexture then return end
 
-  -- Calculate base pupil scale with dilation effect
+  -- 计算瞳孔基础缩放（含放大效果）
   local basePupilScale = eyeSize * 0.8 / 512
-  -- Apply dilation factor (up to maxDilation % larger)
+  -- 应用放大系数（最多放大 maxDilation 比例）
   local dilatedScale = basePupilScale * (1 + (eyes.pupilDilation.maxDilation * dilationFactor))
 
-  -- Draw pupil with original color
+  -- 以原色绘制瞳孔
   love.graphics.setColor(1, 1, 1)
   love.graphics.draw(
     eyes.pupilTexture,
     pupilX, pupilY,
-    0,                -- no rotation
+    0,                -- 不旋转
     dilatedScale, dilatedScale,
-    256, 256         -- center of 512x512 texture
+    256, 256         -- 512x512 纹理的中心
   )
 end
 
----Draws the fire reflection glint
----@param pupilX number X position of the pupil
----@param pupilY number Y position of the pupil
----@param eyeSize number Size of the eye
----@param reflectionIntensity number Intensity of the reflection
----@param fadeValue number Fade value of the eye (reduces reflection)
+---绘制火焰反光的亮点
+---@param pupilX number 瞳孔 X 位置
+---@param pupilY number 瞳孔 Y 位置
+---@param eyeSize number 眼睛尺寸
+---@param reflectionIntensity number 反光强度
+---@param fadeValue number 眼睛的渐变值（会削弱反光）
 local function drawReflection(pupilX, pupilY, eyeSize, reflectionIntensity, fadeValue)
-  -- Calculate actual reflection intensity - fades out completely when eye is touched
+  -- 计算实际反光强度——眼睛被触碰时反光完全淡出
   local actualIntensity = reflectionIntensity * (1.0 - fadeValue)
 
-  if actualIntensity <= 0.01 then return end -- Only draw if visible
+  if actualIntensity <= 0.01 then return end -- 仅在可见时绘制
 
-  -- Save current blend mode and line style
+  -- 保存当前混合模式与线条样式
   local prevBlendMode = love.graphics.getBlendMode()
   local prevLineStyle = love.graphics.getLineStyle()
   local prevLineWidth = love.graphics.getLineWidth()
 
-  -- Enable smooth line drawing
+  -- 启用平滑线条绘制
   love.graphics.setLineStyle("smooth")
   love.graphics.setLineWidth(2)
 
-  -- Calculate the angle from pupil to cursor (fire source)
+  -- 计算从瞳孔指向光标（火焰源）的角度
   local fireAngle = math.atan2(love.mouse.getY() - pupilY, love.mouse.getX() - pupilX)
 
-  -- Calculate the opposite angle (pupil edge away from fire)
+  -- 计算相反的角度（瞳孔背离火焰的那一侧边缘）
   local glintAngle = fireAngle + math.pi
 
-  -- Calculate the pupil radius and position glint on its edge
-  local pupilRadius = eyeSize * 0.15 -- Approximation of pupil radius
+  -- 计算瞳孔半径，并把亮点定位在其边缘
+  local pupilRadius = eyeSize * 0.15 -- 瞳孔半径的近似值
   local glintX = pupilX + math.cos(glintAngle) * pupilRadius
   local glintY = pupilY + math.sin(glintAngle) * pupilRadius
 
-  -- Calculate glint size - significantly smaller than before
+  -- 计算亮点尺寸——比之前明显更小
   local baseGlintSize = eyeSize * eyes.reflection.baseSize
   local glintSize = baseGlintSize * actualIntensity
 
-  -- Use additive blending for glow effect
+  -- 使用加法混合实现发光效果
   love.graphics.setBlendMode("add")
 
-  -- Get reflection colors from the palette
+  -- 从调色板获取反光颜色
   local mainGlintColor = colorUtils.getColor("reflections", "main")
   local coreGlintColor = colorUtils.getColor("reflections", "core")
 
-  -- Draw the main glint with anti-aliasing
+  -- 绘制主亮点（带抗锯齿）
   love.graphics.setColor(
     mainGlintColor[1], mainGlintColor[2], mainGlintColor[3],
     0.8 * actualIntensity
   )
   love.graphics.circle("fill", glintX, glintY, glintSize)
 
-  -- Add a brighter core with anti-aliasing
+  -- 叠加一个更亮的核心（带抗锯齿）
   love.graphics.setColor(
     coreGlintColor[1], coreGlintColor[2], coreGlintColor[3],
     0.9 * actualIntensity
   )
   love.graphics.circle("fill", glintX, glintY, glintSize * 0.6)
 
-  -- Restore previous graphics settings
+  -- 恢复之前的绘图设置
   love.graphics.setBlendMode(prevBlendMode)
   love.graphics.setLineStyle(prevLineStyle)
   love.graphics.setLineWidth(prevLineWidth)
 end
 
----Draws a single eye
----@param eye Eye The eye to draw
----@param isOnline boolean Whether the system is online
+---绘制单只眼睛
+---@param eye Eye 要绘制的眼睛
+---@param isOnline boolean 系统是否在线
 local function drawEye(eye, isOnline)
   local eyeX, eyeY = eye:getPosition()
   local eyeSize = eye.size
@@ -533,13 +559,13 @@ local function drawEye(eye, isOnline)
   local reflectionIntensity = eye.reflection.intensity
   local dilationFactor = eye.pupilDilation
 
-  -- Get base colors from color utility
+  -- 从颜色工具获取基础颜色
   local whiteColor = colorUtils.getMainColor("white")
   local shadedWhiteColor = colorUtils.getMainColor("shadedWhite")
   local lightPinkColor = colorUtils.getMainColor("lightPink")
   local baseIrisColor
 
-  -- Select iris color based on online status
+  -- 根据在线状态选择虹膜颜色
   if isOnline then
     baseIrisColor = colorUtils.getColor("eyes", "online.iris")
   else
@@ -548,27 +574,27 @@ local function drawEye(eye, isOnline)
 
   local touchedIrisColor = colorUtils.getColor("eyes", "touched.iris")
 
-  -- Interpolate between white and pink based on fade value
+  -- 根据渐变值在白色与粉色之间插值
   local eyeColor = colorUtils.lerp(whiteColor, lightPinkColor, fadeValue)
   local shadedEyeColor = colorUtils.lerp(shadedWhiteColor, lightPinkColor, fadeValue)
 
-  -- Interpolate iris color based on touch state
+  -- 根据触碰状态插值虹膜颜色
   local pupilColor = colorUtils.lerp(baseIrisColor, touchedIrisColor, fadeValue)
 
-  -- Calculate the direction vector from eye to fire/cursor
+  -- 计算从眼睛指向火焰/光标的方向向量
   local fireX, fireY = love.mouse.getPosition()
   local dirX, dirY = vector.normalize(fireX - eyeX, fireY - eyeY)
 
-  -- If normalization failed (rare case where cursor is exactly at eye center)
+  -- 若归一化失败（罕见情况：光标正好在眼睛中心）
   if dirX == 0 and dirY == 0 then
     dirX, dirY = 0, -1
   end
 
-  -- Draw the eye components in order (back to front)
+  -- 按从后到前的顺序绘制眼睛各组成部分
   drawEyeBase(eyeX, eyeY, eyeSize, eyeColor, shadedEyeColor, dirX, dirY)
   drawBloodVeins(eyeX, eyeY, eyeSize, fadeValue)
 
-  -- Calculate iris and pupil positions using current tracked position
+  -- 使用当前跟踪位置计算虹膜与瞳孔的位置
   local irisX, irisY, pupilX, pupilY = calculatePupilPosition(
     eyeX, eyeY, eyeSize, fadeValue,
     eye.pupilCurrent.x, eye.pupilCurrent.y
@@ -579,87 +605,87 @@ local function drawEye(eye, isOnline)
   drawReflection(pupilX, pupilY, eyeSize, reflectionIntensity, fadeValue)
 end
 
----Updates the fire effect and fire dot
----@param x number Mouse X position
----@param y number Mouse Y position
+---更新并绘制火焰特效与火焰点
+---@param x number 鼠标 X 位置
+---@param y number 鼠标 Y 位置
 local function drawFireEffect(x, y)
-  -- Draw fire effect using the fire module
+  -- 使用火焰模块绘制火焰特效
   fire.draw()
 
-  -- Make the mouse invisible
+  -- 隐藏鼠标指针
   love.mouse.setVisible(false)
 end
 
----Calculate distance from a point to an eye
----@param pointX number X position of the point
----@param pointY number Y position of the point
----@param eyeX number X position of the eye
----@param eyeY number Y position of the eye
----@return number distance Distance from point to eye
+---计算某个点到一只眼睛的距离
+---@param pointX number 点的 X 位置
+---@param pointY number 点的 Y 位置
+---@param eyeX number 眼睛 X 位置
+---@param eyeY number 眼睛 Y 位置
+---@return number distance 点到眼睛的距离
 function eyes.calculateDistanceToEye(pointX, pointY, eyeX, eyeY)
   return math.sqrt((pointX - eyeX)^2 + (pointY - eyeY)^2)
 end
 
----Calculates intensity value based on distance and configuration
----@param distance number Distance to the eye
----@param config table Configuration with minDistance, maxDistance and (optionally) maxIntensity
----@param minIntensity number Minimum intensity to use when in range (defaults to 0)
----@param invert boolean If true, closer distance means lower intensity (defaults to false)
----@return number intensity The calculated intensity value (0-1 or 0-maxIntensity)
+---根据距离与配置计算强度值
+---@param distance number 到眼睛的距离
+---@param config table 含 minDistance、maxDistance（及可选 maxIntensity）的配置
+---@param minIntensity number 处于范围内时使用的最小强度（默认为 0）
+---@param invert boolean 若为 true，则距离越近强度越低（默认为 false）
+---@return number intensity 计算出的强度值（0-1 或 0-maxIntensity）
 function eyes.calculateIntensityFromDistance(distance, config, minIntensity, invert)
-  -- Default values
+  -- 默认值
   minIntensity = minIntensity or 0
   local maxIntensity = config.maxIntensity or 1
 
-  -- If outside range, no intensity
+  -- 若超出范围则强度为 0
   if distance >= config.maxDistance then
     return 0
   end
 
-  -- Calculate normalized distance factor (0-1)
+  -- 计算归一化的距离系数（0-1）
   local distanceFactor = (distance - config.minDistance) / (config.maxDistance - config.minDistance)
 
-  -- Clamp to 0-1 range
+  -- 限制到 0-1 范围
   distanceFactor = math.max(0, math.min(1, distanceFactor))
 
-  -- Invert if needed (for dilation, closer = more effect)
+  -- 必要时反转（用于放大效果：越近效果越强）
   if invert then
     distanceFactor = 1 - distanceFactor
   else
-    -- For normal case (reflection), closer = more intensity
+    -- 常规情况（反光）：越近强度越高
     distanceFactor = 1 - distanceFactor
   end
 
-  -- Calculate final intensity and clamp to range
+  -- 计算最终强度并限制到范围内
   local intensity = distanceFactor * maxIntensity
   return math.max(minIntensity, math.min(maxIntensity, intensity))
 end
 
----Calculate effects (reflection and dilation) for both eyes in a single pass
----@param mousePosition table {x=number, y=number} Mouse/cursor position
----@param leftEye Eye The left eye object
----@param rightEye Eye The right eye object
----@param reflectionConfig table Configuration for reflection effect
----@param dilationConfig table Configuration for pupil dilation effect
----@return table Effects calculated effects {leftReflection=number, rightReflection=number, leftDilation=number, rightDilation=number}
+---在一次遍历中计算两只眼睛的效果（反光与瞳孔放大）
+---@param mousePosition table {x=number, y=number} 鼠标/光标位置
+---@param leftEye Eye 左眼对象
+---@param rightEye Eye 右眼对象
+---@param reflectionConfig table 反光效果配置
+---@param dilationConfig table 瞳孔放大效果配置
+---@return table Effects 计算出的效果 {leftReflection=number, rightReflection=number, leftDilation=number, rightDilation=number}
 function eyes.calculateEyeEffects(mousePosition, leftEye, rightEye, reflectionConfig, dilationConfig)
-  -- Get eye positions
+  -- 获取两只眼睛的位置
   local leftEyeX, leftEyeY = leftEye:getPosition()
   local rightEyeX, rightEyeY = rightEye:getPosition()
 
-  -- Calculate distances to eyes just once
+  -- 只计算一次到两只眼睛的距离
   local distanceToLeft = eyes.calculateDistanceToEye(mousePosition.x, mousePosition.y, leftEyeX, leftEyeY)
   local distanceToRight = eyes.calculateDistanceToEye(mousePosition.x, mousePosition.y, rightEyeX, rightEyeY)
 
-  -- Calculate reflection intensities
+  -- 计算反光强度
   local leftReflection = eyes.calculateIntensityFromDistance(distanceToLeft, reflectionConfig, 0.2)
   local rightReflection = eyes.calculateIntensityFromDistance(distanceToRight, reflectionConfig, 0.2)
 
-  -- Calculate dilation factors (invert the distance relationship)
+  -- 计算瞳孔放大系数（反转距离关系）
   local leftDilation = eyes.calculateIntensityFromDistance(distanceToLeft, dilationConfig, 0, true)
   local rightDilation = eyes.calculateIntensityFromDistance(distanceToRight, dilationConfig, 0, true)
 
-  -- Return all calculated values in a single table
+  -- 将所有计算结果一次性返回
   return {
     leftReflection = leftReflection,
     rightReflection = rightReflection,
@@ -672,8 +698,8 @@ function eyes.calculateEyeEffects(mousePosition, leftEye, rightEye, reflectionCo
   }
 end
 
----Updates the online status by performing a network request
----@return boolean isOnline True if the site is online
+---通过网络请求更新在线状态
+---@return boolean isOnline 若站点在线则为 true
 local function checkOnlineStatus()
   if not https then return false end
 
@@ -685,10 +711,10 @@ local function checkOnlineStatus()
   return success and result and result.code and result.code < 400
 end
 
----Updates the shake effect when mouse is over eyes
----@param shakeAmount number Maximum shake amount
----@return number shakeX Resulting X shake value
----@return number shakeY Resulting Y shake value
+---当鼠标位于眼睛上方时更新抖动效果
+---@param shakeAmount number 最大抖动幅度
+---@return number shakeX 结果 X 抖动值
+---@return number shakeY 结果 Y 抖动值
 local function updateShakeEffect(shakeAmount)
   if eyes.state.touching then
     return love.math.random(-shakeAmount, shakeAmount), love.math.random(-shakeAmount, shakeAmount)
@@ -697,37 +723,37 @@ local function updateShakeEffect(shakeAmount)
   end
 end
 
----Loads resources and initializes the eyes
+---加载资源并初始化眼睛
 function eyes.load()
-  -- Initialize resource manager and load all resources
+  -- 初始化资源管理器并加载全部资源
   eyes.resources = ResourceManager.new():loadAll()
 
-  -- Store references to commonly used resources for convenience
+  -- 为常用资源保存引用，便于取用
   eyes.bloodVeinsTexture = eyes.resources:getTexture("bloodVeins")
   eyes.irisTexture = eyes.resources:getTexture("iris")
   eyes.pupilTexture = eyes.resources:getTexture("pupil")
   eyes.eyeShader = eyes.resources:getShader("eye")
 
-  -- Set the default font
+  -- 设置默认字体
   eyes.resources:setDefaultFont("default")
 
-  -- Load other modules
+  -- 加载其他模块
   background:load()
   audio:load()
   fire:load()
   shadows.load()
 
-  -- Store reference to fire module for state manager
+  -- 为状态管理器保存对火焰模块的引用
   eyes.fireModule = fire
 
-  -- Check online status
+  -- 检测在线状态
   eyes.isOnline = checkOnlineStatus()
 
-  -- Create our eye instances
+  -- 创建眼睛实例
   local windowWidth, windowHeight = love.graphics.getDimensions()
   local leftX, rightX, centerY = calculateEyePositions(windowWidth, windowHeight, eyes.eyeSpacing)
 
-  -- Create eyes with their appropriate phases
+  -- 以各自合适的相位创建两只眼睛
   eyes.eyes.left = Eye.new("left", leftX, centerY, eyes.eyeSize,
                           eyes.floating.phaseLeftX or 0,
                           eyes.floating.phaseLeftY or math.pi * 0.5)
@@ -736,10 +762,10 @@ function eyes.load()
                            eyes.floating.phaseRightX or math.pi * 0.7,
                            eyes.floating.phaseRightY or math.pi * 0.3)
 
-  -- Initialize the state manager
+  -- 初始化状态管理器
   eyes.stateManager = StateManager.new(eyes)
 
-  -- Hide the mouse cursor
+  -- 隐藏鼠标指针
   love.mouse.setVisible(false)
 end
 
@@ -749,38 +775,38 @@ function eyes.update(dt)
   local windowWidth = love.graphics.getWidth()
   local windowHeight = love.graphics.getHeight()
 
-  -- Update shadow positions
+  -- 更新阴影位置
   shadows.update(dt, windowHeight)
 
-  -- Calculate base eye positions once per frame
+  -- 每帧计算一次眼睛基础位置
   local leftEyeX, rightEyeX, centerY = calculateEyePositions(windowWidth, windowHeight, eyes.eyeSpacing)
 
-  -- Update base positions for our eye objects
+  -- 更新两只眼睛对象的基础位置
   eyes.eyes.left:setBasePosition(leftEyeX, centerY)
   eyes.eyes.right:setBasePosition(rightEyeX, centerY)
 
-  -- Update all state through the centralized state manager
+  -- 通过集中式状态管理器更新所有状态
   eyes.stateManager:update(dt)
 
-  -- Copy important state values for convenience/backward compatibility
+  -- 复制重要状态值，便于使用/向后兼容
   eyes.x = eyes.stateManager.mousePosition.x
   eyes.y = eyes.stateManager.mousePosition.y
   eyes.shakeX = eyes.stateManager.shake.x
   eyes.shakeY = eyes.stateManager.shake.y
 
-  -- Update eye pupil tracking with inertia
+  -- 带惯性地更新眼睛瞳孔跟踪
   local leftEye = eyes.eyes.left
   local rightEye = eyes.eyes.right
   local leftEyeX, leftEyeY = leftEye:getPosition()
   local rightEyeX, rightEyeY = rightEye:getPosition()
 
-  -- Calculate target positions for both eyes
+  -- 为两只眼睛计算目标位置
   local function calculateTargetPosition(eyeX, eyeY, eyeSize)
     local mouseX, mouseY = love.mouse.getPosition()
     local distanceX = mouseX - eyeX
     local distanceY = mouseY - eyeY
 
-    -- Limit how far the pupil can move from center
+    -- 限制瞳孔偏离中心的最大距离
     local maxDistance = eyeSize * eyes.tracking.maxTrackingDistance
     local distance = math.sqrt(distanceX^2 + distanceY^2)
 
@@ -793,7 +819,7 @@ function eyes.update(dt)
     return eyeX + distanceX, eyeY + distanceY
   end
 
-  -- Calculate tracking speed based on touch state
+  -- 根据触碰状态计算跟踪速度
   local leftTrackingSpeed = eyes.tracking.speed
   local rightTrackingSpeed = eyes.tracking.speed
 
@@ -805,21 +831,21 @@ function eyes.update(dt)
     rightTrackingSpeed = rightTrackingSpeed * eyes.tracking.touchedSpeedFactor
   end
 
-  -- Get target positions and update pupil tracking
+  -- 获取目标位置并更新瞳孔跟踪
   local leftTargetX, leftTargetY = calculateTargetPosition(leftEyeX, leftEyeY, leftEye.size)
   local rightTargetX, rightTargetY = calculateTargetPosition(rightEyeX, rightEyeY, rightEye.size)
 
   leftEye:updatePupilTracking(dt, leftTargetX, leftTargetY, leftTrackingSpeed)
   rightEye:updatePupilTracking(dt, rightTargetX, rightTargetY, rightTrackingSpeed)
 
-  -- Update audio system with current state and cursor position
+  -- 用当前状态与光标位置更新音频系统
   audio:update(dt, {
     touching = eyes.stateManager.touching,
     touchingLeft = eyes.eyes.left.isTouching,
     touchingRight = eyes.eyes.right.isTouching
   }, eyes.x, eyes.y)
 
-  -- Update fire module with current mouse position
+  -- 用当前鼠标位置更新火焰模块
   fire.update(dt, eyes.x, eyes.y)
 end
 
@@ -827,11 +853,11 @@ function eyes.draw()
   local windowWidth = love.graphics.getWidth()
   local windowHeight = love.graphics.getHeight()
 
-  -- Draw a solid black background first
+  -- 先绘制纯黑背景
   love.graphics.setColor(0, 0, 0)
   love.graphics.rectangle("fill", 0, 0, windowWidth, windowHeight)
 
-  -- Get shake effect values from state manager
+  -- 从状态管理器获取抖动效果值
   local shakeX = eyes.stateManager.shake.x
   local shakeY = eyes.stateManager.shake.y
 
@@ -839,25 +865,25 @@ function eyes.draw()
   love.graphics.translate(shakeX, shakeY)
   background:draw()
 
-  -- Get actual eye positions for shadows
+  -- 获取用于绘制阴影的实际眼睛位置
   local leftX, leftY = eyes.eyes.left:getPosition()
   local rightX, rightY = eyes.eyes.right:getPosition()
 
-  -- Draw shadows first so they appear beneath the eyes
+  -- 先绘制阴影，使其位于眼睛下方
   shadows.draw(leftX, leftY, eyes.eyeSize)
   shadows.draw(rightX, rightY, eyes.eyeSize)
 
-  -- Draw eyes with their respective fade values, reflection effects, pupil dilation, and online status
+  -- 绘制两只眼睛（含各自的渐变值、反光效果、瞳孔放大与在线状态）
   drawEye(eyes.eyes.left, eyes.isOnline)
   drawEye(eyes.eyes.right, eyes.isOnline)
 
-  -- Draw only the fire effect
+  -- 仅绘制火焰特效
   drawFireEffect(eyes.x, eyes.y)
 
   love.graphics.pop()
 end
 
--- Add cleanup for audio when the scene is exited
+-- 场景退出时清理音频
 function eyes.unload()
   audio:stop()
 end

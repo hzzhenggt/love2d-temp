@@ -1,46 +1,66 @@
+--[[
+================================================================================
+ eyes/fire.lua —— 火焰粒子特效模块
+================================================================================
+ 作用：
+   实现跟随鼠标光标的火焰特效，由四套粒子系统分层叠加而成：
+     - fire（外焰）  ：外层不规则跳动的火苗
+     - core（核心）  ：稳定的内核火焰
+     - spark（火星） ：偶尔迸出的明亮火星（手动控制发射）
+     - smoke（烟雾） ：上升的烟雾
+
+ 设计要点：
+   - 使用 Fire 类（面向对象）封装一个火焰实例；粒子图片等资源在所有实例间
+     共享，并用引用计数管理生命周期。
+   - 各粒子系统的参数集中定义在 Fire.PARTICLE_CONFIGS 中，并与基础模板合并。
+   - 文件末尾创建了一个全局实例，并通过元表把实例方法转发为模块级函数，
+     以兼容旧的调用方式（fire.update / fire.draw 等）。
+================================================================================
+--]]
+
 local overlayStats = require("lib.overlayStats")
 
----@class Fire A class for fire effects and particle systems
+---@class Fire 火焰特效与粒子系统类
 local Fire = {}
 Fire.__index = Fire
 
--- Fire-related colors (static shared data)
+-- 火焰相关颜色（类级别的共享静态数据）
 Fire.COLORS = {
   fire = {
-    { 1, 0.7, 0, 0.8 },   -- golden orange
-    { 1, 0.4, 0, 0.7 },   -- orange
-    { 1, 0.2, 0, 0.5 },   -- red-orange
-    { 0.7, 0.1, 0, 0.3 }, -- dark red
-    { 0.4, 0, 0, 0 }      -- fade out to transparent
+    { 1, 0.7, 0, 0.8 },   -- 金橙色
+    { 1, 0.4, 0, 0.7 },   -- 橙色
+    { 1, 0.2, 0, 0.5 },   -- 红橙色
+    { 0.7, 0.1, 0, 0.3 }, -- 暗红色
+    { 0.4, 0, 0, 0 }      -- 淡出至透明
   },
   corefire = {
-    { 1, 1, 0.8, 0.9 },   -- bright yellow
-    { 1, 0.8, 0.2, 0.7 }, -- yellow-orange
-    { 1, 0.6, 0, 0.5 },   -- orange
-    { 1, 0.3, 0, 0.3 },   -- reddish-orange
-    { 0.8, 0.1, 0 }    -- fade out
+    { 1, 1, 0.8, 0.9 },   -- 亮黄色
+    { 1, 0.8, 0.2, 0.7 }, -- 黄橙色
+    { 1, 0.6, 0, 0.5 },   -- 橙色
+    { 1, 0.3, 0, 0.3 },   -- 偏红的橙色
+    { 0.8, 0.1, 0 }       -- 淡出
   },
   spark = {
-    { 1, 1, 1, 1 },     -- white
-    { 1, 1, 0.6, 0.8 }, -- bright yellow
-    { 1, 0.3, 0, 0.3 },   -- reddish-orange
-    { 1, 0.6, 0.1, 0 }  -- fade to transparent
+    { 1, 1, 1, 1 },       -- 白色
+    { 1, 1, 0.6, 0.8 },   -- 亮黄色
+    { 1, 0.3, 0, 0.3 },   -- 偏红的橙色
+    { 1, 0.6, 0.1, 0 }    -- 淡出至透明
   },
   smoke = {
-    { 0.5, 0.5, 0.5, 0 },   -- transparent to start
-    { 0.4, 0.4, 0.4, 0.2 }, -- light gray with some transparency
-    { 0.3, 0.3, 0.3, 0.1 }, -- mid gray, fading
-    { 0.2, 0.2, 0.2, 0 }    -- dark gray, completely transparent
+    { 0.5, 0.5, 0.5, 0 },   -- 以透明开始
+    { 0.4, 0.4, 0.4, 0.2 }, -- 浅灰，略带透明
+    { 0.3, 0.3, 0.3, 0.1 }, -- 中灰，逐渐淡出
+    { 0.2, 0.2, 0.2, 0 }    -- 深灰，完全透明
   },
   reflection = {
-    { 1, 0.95, 0.8, 1.0 },  -- Bright white-yellow
-    { 1, 0.8, 0.3, 0.7 }    -- Fading orange-yellow
+    { 1, 0.95, 0.8, 1.0 },  -- 明亮的白黄色
+    { 1, 0.8, 0.3, 0.7 }    -- 逐渐淡出的橙黄色
   }
 }
 
--- Base configuration templates as class properties
+-- 作为类属性的基础配置模板
 Fire.BASE_PARTICLE_CONFIG = {
-  direction = -math.pi/2,
+  direction = -math.pi/2, -- 发射方向（向上）
   sizeVariation = 0.5,
   autostart = true
 }
@@ -51,7 +71,7 @@ Fire.BASE_FIRE_CONFIG = {
   tangential = { min = -20, max = 20 }
 }
 
--- Particle system configuration templates
+-- 各粒子系统的配置模板
 Fire.PARTICLE_CONFIGS = {
   fire = {
     count = 100,
@@ -66,7 +86,7 @@ Fire.PARTICLE_CONFIGS = {
     tangential = Fire.BASE_FIRE_CONFIG.tangential,
     spin = { min = -0.5, max = 0.5 },
     spinVariation = 1,
-    -- Use default base properties for the rest
+    -- 其余项使用基础默认配置
   },
 
   core = {
@@ -80,13 +100,13 @@ Fire.PARTICLE_CONFIGS = {
     spread = math.pi/8,
     radial = { min = -2, max = 2 },
     tangential = { min = -5, max = 5 },
-    -- Use default base properties for the rest
+    -- 其余项使用基础默认配置
   },
 
   spark = {
     count = 30,
     lifetime = { min = 0.5, max = 1.5 },
-    emissionRate = 0, -- Controlled manually
+    emissionRate = 0, -- 手动控制发射
     acceleration = { minX = -20, minY = -200, maxX = 20, maxY = -300 },
     speed = { min = 50, max = 150 },
     sizes = { 0.6, 0.4, 0.2, 0 },
@@ -96,7 +116,7 @@ Fire.PARTICLE_CONFIGS = {
     spin = { min = -2, max = 2 },
     spinVariation = 1,
     autostart = false,
-    -- Use default base properties for the rest
+    -- 其余项使用基础默认配置
   },
 
   smoke = {
@@ -113,11 +133,11 @@ Fire.PARTICLE_CONFIGS = {
     spin = { min = 0.1, max = 0.8 },
     spinVariation = 1,
     offset = function() return love.math.random(-5,5), love.math.random(60,90) end,
-    -- Use default base properties for the rest
+    -- 其余项使用基础默认配置
   }
 }
 
--- Shared resources across all instances
+-- 所有实例共享的资源
 Fire.resources = {
   particleImage = nil,
   sparkImage = nil,
@@ -125,21 +145,21 @@ Fire.resources = {
   refCount = 0
 }
 
--- Initialize shared resources if needed
+-- 按需初始化共享资源
 function Fire.initResources()
   if Fire.resources.initialized then
     Fire.resources.refCount = Fire.resources.refCount + 1
     return
   end
 
-  -- Create flame particle image (only once)
+  -- 创建火焰粒子图片（仅创建一次）
   Fire.resources.particleImage = Fire.createFlameImage()
   Fire.resources.sparkImage = Fire.createSparkImage()
   Fire.resources.initialized = true
   Fire.resources.refCount = 1
 end
 
--- Release shared resources when no longer needed
+-- 当不再需要时释放共享资源
 function Fire.releaseResources()
   Fire.resources.refCount = Fire.resources.refCount - 1
   if Fire.resources.refCount <= 0 then
@@ -156,32 +176,33 @@ function Fire.releaseResources()
   end
 end
 
--- Move image creation functions to class-level static methods
+-- 将图片创建函数提升为类级别的静态方法
+-- 创建火苗（水滴形）粒子图片
 function Fire.createFlameImage()
   local particleImg = love.graphics.newCanvas(32, 32)
   love.graphics.setCanvas(particleImg)
   love.graphics.clear()
 
-  -- Enable antialiasing and draw a teardrop/flame shape
+  -- 开启抗锯齿并绘制一个水滴/火苗形状
   local prevLineStyle = love.graphics.getLineStyle()
   love.graphics.setLineStyle("smooth")
   love.graphics.setColor(1, 1, 1)
 
-  -- Create a teardrop shape (narrow at top, wider at bottom)
+  -- 创建水滴形状（上窄下宽）
   local points = {}
   local centerX, centerY = 16, 16
   for i = 0, 32 do
     local angle = (i / 32) * math.pi * 2
-    -- Modify radius to create teardrop shape
-    local radius = 14 * (1 - 0.3 * math.sin(angle)) -- Slightly narrower at top
+    -- 调整半径以形成水滴形状
+    local radius = 14 * (1 - 0.3 * math.sin(angle)) -- 顶部略窄
     local x = centerX + radius * math.cos(angle)
-    local y = centerY + radius * math.sin(angle) * 1.2 -- Stretch vertically
+    local y = centerY + radius * math.sin(angle) * 1.2 -- 纵向拉伸
     table.insert(points, x)
     table.insert(points, y)
   end
   love.graphics.polygon("fill", unpack(points))
 
-  -- Add glow effect
+  -- 添加光晕效果
   love.graphics.setColor(1, 1, 1, 0.5)
   love.graphics.circle("fill", 16, 16, 16)
 
@@ -191,6 +212,7 @@ function Fire.createFlameImage()
   return particleImg
 end
 
+-- 创建火星（圆点）粒子图片
 function Fire.createSparkImage()
   local sparkImg = love.graphics.newCanvas(16, 16)
   love.graphics.setCanvas(sparkImg)
@@ -208,73 +230,73 @@ function Fire.createSparkImage()
   return sparkImg
 end
 
----Creates a new Fire instance
+---创建一个新的 Fire 实例
 ---@return Fire
 function Fire.new()
-  -- Initialize shared resources
+  -- 初始化共享资源
   Fire.initResources()
 
   local self = setmetatable({}, Fire)
 
-  -- Instance properties (formerly global state)
-  self.fireSystem = nil    -- Outer erratic flames
-  self.coreSystem = nil    -- Stable inner core
-  self.sparkSystem = nil   -- Occasional bright sparks
-  self.smokeSystem = nil   -- Smoke effect
+  -- 实例属性（原先的全局状态）
+  self.fireSystem = nil    -- 外层不规则火焰
+  self.coreSystem = nil    -- 稳定的内核
+  self.sparkSystem = nil   -- 偶发的明亮火星
+  self.smokeSystem = nil   -- 烟雾效果
 
-  -- Timer for spark emission control
+  -- 控制火星发射的计时器
   self.sparkTimer = 0
   self.sparkInterval = 0.15
 
-  -- Colors reference (can be customized per instance)
+  -- 颜色引用（可按实例自定义）
   self.colors = Fire.COLORS
 
-  -- Initialize the particle systems
+  -- 初始化粒子系统
   self:initParticleSystem()
 
   return self
 end
 
--- Add cleanup method
+-- 清理方法
 function Fire:destroy()
-  -- Release particle systems
+  -- 释放各粒子系统
   if self.fireSystem then self.fireSystem:release() end
   if self.coreSystem then self.coreSystem:release() end
   if self.sparkSystem then self.sparkSystem:release() end
   if self.smokeSystem then self.smokeSystem:release() end
 
-  -- Release reference to shared resources
+  -- 释放对共享资源的引用
   Fire.releaseResources()
 end
 
----Creates a particle system based on a predefined configuration type
----@param type string The particle system type ('fire', 'core', 'spark', 'smoke')
----@param image love.Canvas The image to use for the particles
----@return love.ParticleSystem The configured particle system
+---根据预定义配置类型创建一个粒子系统
+---@param type string 粒子系统类型（'fire'、'core'、'spark'、'smoke'）
+---@param image love.Canvas 粒子使用的图片
+---@return love.ParticleSystem 配置完成的粒子系统
 function Fire:createParticleSystem(type, image)
-  -- Get the configuration for this type
+  -- 获取该类型的配置
   local config = Fire.PARTICLE_CONFIGS[type]
   if not config then
     error("Unknown particle system type: " .. tostring(type))
   end
 
-  -- Create the system with the specified particle count
+  -- 以指定粒子数量创建系统
   local system = love.graphics.newParticleSystem(image, config.count)
 
-  -- Apply any special configuration before standard configuration
+  -- 在标准配置之前应用特殊配置
   if type == "smoke" and config.offset then
     local offsetX, offsetY = config.offset()
     system:setOffset(offsetX, offsetY)
   end
 
-  -- Prepare the configuration by merging with base config
+  -- 将类型配置与基础配置合并，得到完整配置
   local fullConfig = {
-    -- Apply base defaults
+    -- 先应用基础默认值
     direction = Fire.BASE_PARTICLE_CONFIG.direction,
     sizeVariation = Fire.BASE_PARTICLE_CONFIG.sizeVariation,
     autostart = Fire.BASE_PARTICLE_CONFIG.autostart,
 
-    -- Then apply type-specific config
+    -- 再应用类型专属配置
     lifetime = config.lifetime,
     emissionRate = config.emissionRate,
     sizeVariation = config.sizeVariation or Fire.BASE_PARTICLE_CONFIG.sizeVariation,
@@ -284,19 +306,19 @@ function Fire:createParticleSystem(type, image)
     spread = config.spread,
     radial = config.radial,
     tangential = config.tangential,
-    colors = self.colors[type == "core" and "corefire" or type], -- Map 'core' to 'corefire'
+    colors = self.colors[type == "core" and "corefire" or type], -- 将 'core' 映射到 'corefire'
     spin = config.spin,
     spinVariation = config.spinVariation,
     autostart = config.autostart ~= nil and config.autostart or Fire.BASE_PARTICLE_CONFIG.autostart
   }
 
-  -- Configure and return the particle system
+  -- 配置并返回该粒子系统
   return self:configureParticleSystem(system, fullConfig)
 end
 
----Configures a particle system with common properties
----@param particleSystem love.ParticleSystem The particle system to configure
----@param config table Configuration parameters
+---用通用属性配置一个粒子系统
+---@param particleSystem love.ParticleSystem 要配置的粒子系统
+---@param config table 配置参数
 function Fire:configureParticleSystem(particleSystem, config)
   particleSystem:setParticleLifetime(config.lifetime.min, config.lifetime.max)
   particleSystem:setEmissionRate(config.emissionRate)
@@ -323,19 +345,19 @@ function Fire:configureParticleSystem(particleSystem, config)
   return particleSystem
 end
 
----Creates and initializes the particle systems for the cursor flame effect
----@return love.ParticleSystem The outer fire particle system
----@return love.ParticleSystem The core fire particle system
----@return love.ParticleSystem The spark particle system
----@return love.ParticleSystem The smoke particle system
+---创建并初始化光标火焰特效所需的各粒子系统
+---@return love.ParticleSystem 外焰粒子系统
+---@return love.ParticleSystem 核心火焰粒子系统
+---@return love.ParticleSystem 火星粒子系统
+---@return love.ParticleSystem 烟雾粒子系统
 function Fire:initParticleSystem()
-  -- Use shared resources and unified creation function
+  -- 使用共享资源与统一的创建函数
   local fireSystem = self:createParticleSystem("fire", Fire.resources.particleImage)
   local coreSystem = self:createParticleSystem("core", Fire.resources.particleImage)
   local sparkSystem = self:createParticleSystem("spark", Fire.resources.sparkImage)
   local smokeSystem = self:createParticleSystem("smoke", Fire.resources.particleImage)
 
-  -- Store the systems in instance properties
+  -- 将各系统保存到实例属性
   self.fireSystem = fireSystem
   self.coreSystem = coreSystem
   self.sparkSystem = sparkSystem
@@ -344,8 +366,8 @@ function Fire:initParticleSystem()
   return fireSystem, coreSystem, sparkSystem, smokeSystem
 end
 
----Register particle systems with the stats overlay
----@param overlayStatsModule table Optional stats overlay module for registering particle systems
+---将各粒子系统注册到性能统计浮层
+---@param overlayStatsModule table 可选的统计浮层模块，用于注册粒子系统
 function Fire:registerWithStats(overlayStatsModule)
   if not overlayStatsModule then return end
 
@@ -355,28 +377,28 @@ function Fire:registerWithStats(overlayStatsModule)
   end
 end
 
----Updates a particle system position
----@param system love.ParticleSystem The particle system to update
----@param dt number Delta time
----@param x number X position
----@param y number Y position
+---更新单个粒子系统的位置
+---@param system love.ParticleSystem 要更新的粒子系统
+---@param dt number 帧间隔时间
+---@param x number X 位置
+---@param y number Y 位置
 local function updateSystem(system, dt, x, y)
   system:update(dt)
   system:setPosition(x, y)
 end
 
----Update the fire particle systems
----@param dt number Delta time
----@param x number Current x position of the fire (mouse)
----@param y number Current y position of the fire (mouse)
+---更新火焰的各粒子系统
+---@param dt number 帧间隔时间
+---@param x number 火焰（鼠标）当前的 x 位置
+---@param y number 火焰（鼠标）当前的 y 位置
 function Fire:update(dt, x, y)
-  -- Update all particle systems
+  -- 更新全部粒子系统
   updateSystem(self.fireSystem, dt, x, y)
   updateSystem(self.coreSystem, dt, x, y)
   updateSystem(self.smokeSystem, dt, x, y)
   updateSystem(self.sparkSystem, dt, x, y)
 
-  -- Spark emission control - randomly emit sparks
+  -- 火星发射控制——随机迸发火星
   self.sparkTimer = self.sparkTimer + dt
   if self.sparkTimer >= self.sparkInterval then
     self.sparkTimer = 0
@@ -385,15 +407,15 @@ function Fire:update(dt, x, y)
   end
 end
 
----Draw the fire effect
+---绘制火焰特效
 function Fire:draw()
-  -- FIXME: Set color to yellow to prevent the fire from being snuffed out while the mouse is moving
+  -- FIXME: 将颜色设为黄色，以防鼠标移动时火焰被"吹灭"（变暗）
   love.graphics.setColor({ 1, 1, 0 })
 
-  -- Save current blend mode
+  -- 保存当前混合模式
   local prevBlendMode = love.graphics.getBlendMode()
 
-  -- Draw the layers in back-to-front order
+  -- 按从后到前的顺序绘制各层
   love.graphics.setBlendMode("alpha")
   love.graphics.draw(self.smokeSystem)
   love.graphics.draw(self.coreSystem)
@@ -402,22 +424,22 @@ function Fire:draw()
   love.graphics.draw(self.fireSystem)
   love.graphics.draw(self.sparkSystem)
 
-  -- Restore previous blend mode
+  -- 恢复之前的混合模式
   love.graphics.setBlendMode(prevBlendMode)
 end
 
--- For backward compatibility with old code - use metatable for automatic method forwarding
+-- 为兼容旧代码而设 —— 用元表自动转发实例方法
 local globalInstance = Fire.new()
 
 local fire = setmetatable({
-  -- Explicitly defined properties
+  -- 显式定义的属性
   Fire = Fire,
   colors = globalInstance.colors
 }, {
   __index = function(_, key)
     local value = globalInstance[key]
     if type(value) == "function" then
-      -- Automatically wrap instance methods for global access
+      -- 自动包装实例方法，供模块级（全局）调用
       return function(...)
         return value(globalInstance, ...)
       end
@@ -426,7 +448,7 @@ local fire = setmetatable({
   end
 })
 
--- Special case for load since it performs registration
+-- load 是特例，因为它需要执行注册操作
 fire.load = function() globalInstance:registerWithStats(overlayStats) end
 
 return fire
