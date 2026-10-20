@@ -1,8 +1,37 @@
+--[[
+================================================================================
+ lib/overlayStats.lua —— 性能统计浮层模块
+================================================================================
+ 说明：
+   本文件原为第三方库，现应项目需要进行了注释汉化。
+   ⚠ 注意：若日后从上游更新此库，这里的中文注释会被覆盖/产生冲突。
+
+ 作用：
+   在游戏画面左上角绘制一个半透明的性能监控浮层，实时显示 FPS、帧耗时、
+   内存/显存占用、Draw Call、着色器切换、粒子数量以及渲染器/系统信息等。
+   可用于开发期排查性能问题。
+
+ 开关方式：
+     键盘：F3 显示/隐藏浮层，F5 开关垂直同步（VSync）
+     手柄：Back + A 切换浮层，Back + B 切换 VSync
+     触摸：双击右上角切换浮层；浮层开启时双击浮层区域切换 VSync
+
+ 工作原理：
+   - update() 每帧采样各项指标，循环写入固定大小的样本缓冲（sampleSize）。
+   - draw()   取样本的平均值并绘制到屏幕。
+   - 粒子系统需先通过 registerParticleSystem 注册，才会被纳入统计。
+
+ 使用约定：
+   在 main.lua 中，load/draw/update 以及键盘、触摸回调都应"最后调用"本模块，
+   以保证统计到的是当帧的完整数据。
+================================================================================
+--]]
+
 ---@class overlayStats
----A performance monitoring overlay module for LÖVE games
----@field isActive boolean Whether the overlay is currently visible
----@field sampleSize number Maximum number of samples to keep for metrics
----@field vsyncEnabled boolean Current VSync state
+---LÖVE 游戏的性能监控浮层模块
+---@field isActive boolean 浮层当前是否可见
+---@field sampleSize number 各指标保留的最大样本数
+---@field vsyncEnabled boolean 当前的垂直同步状态
 local name, version, vendor, device = love.graphics.getRendererInfo()
 local overlayStats = {
   isActive = false,
@@ -10,7 +39,7 @@ local overlayStats = {
   vsyncEnabled = nil,
   lastControllerCheck = 0,
   CONTROLLER_COOLDOWN = 0.2,
-  -- Store active particle systems
+  -- 存放已注册的活动粒子系统
   particleSystems = {},
   renderInfo = {
     name = name,
@@ -40,19 +69,19 @@ local overlayStats = {
     particleCount = {},
   },
   currentSample = 0,
-  -- Touch activation parameters
+  -- 触摸激活相关参数
   touch = {
-    cornerSize = 80, -- Size of the activation area in pixels
-    lastTapTime = 0, -- Time of the last tap
-    doubleTapThreshold = 0.5, -- Maximum time between taps to register as double-tap
-    overlayArea = {x = 10, y = 10, width = 280, height = 340}, -- Will be updated in draw
+    cornerSize = 80, -- 激活区域的大小（像素）
+    lastTapTime = 0, -- 上次点按的时间
+    doubleTapThreshold = 0.5, -- 判定为双击的两次点按最大间隔
+    overlayArea = {x = 10, y = 10, width = 280, height = 340}, -- 将在 draw 中更新
   },
 }
 
--- Private functions
+-- 私有函数
 
----Calculates averages for all performance metrics
----@return table averages Table of averaged metric values
+---计算所有性能指标的平均值
+---@return table averages 各指标平均值组成的表
 local function getAverages()
   if not overlayStats.isActive then
     return {}
@@ -71,10 +100,10 @@ local function getAverages()
   return averages
 end
 
----Checks and processes controller input for toggling the overlay
----Called from update() function
+---检测并处理用于切换浮层的手柄输入
+---由 update() 函数调用
 local function handleController()
-  -- Controller input with cooldown
+  -- 带冷却时间的手柄输入处理
   local currentTime = love.timer.getTime()
   if currentTime - overlayStats.lastControllerCheck < overlayStats.CONTROLLER_COOLDOWN then
     return
@@ -94,11 +123,11 @@ local function handleController()
   end
 end
 
----Toggles the visibility of the overlay
----Resets all metrics on activation
+---切换浮层的显示/隐藏
+---激活时会重置所有指标
 local function toggleOverlay()
   overlayStats.isActive = not overlayStats.isActive
-  -- Reset metrics when toggling
+  -- 切换时重置各项指标
   for k, _ in pairs(overlayStats.metrics) do
     overlayStats.metrics[k] = {}
   end
@@ -106,8 +135,8 @@ local function toggleOverlay()
   print(string.format("Overlay %s", overlayStats.isActive and "enabled" or "disabled"))
 end
 
----Toggles the VSync state in LÖVE
----Only functions when the overlay is active
+---切换 LÖVE 的垂直同步（VSync）状态
+---仅在浮层处于激活状态时生效
 local function toggleVSync()
   if not overlayStats.isActive then
     return
@@ -117,44 +146,44 @@ local function toggleVSync()
   print(string.format("VSync %s", overlayStats.vsyncEnabled and "enabled" or "disabled"))
 end
 
----Checks if the given touch position is in the top-right corner activation area
----@param x number The x-coordinate of the touch
----@param y number The y-coordinate of the touch
----@return boolean inCorner True if touch is in the activation area
+---检测给定的触摸位置是否落在右上角的激活区域内
+---@param x number 触摸点的 x 坐标
+---@param y number 触摸点的 y 坐标
+---@return boolean inCorner 若触摸位于激活区域内则为 true
 local function isTouchInCorner(x, y)
   local w, h = love.graphics.getDimensions()
   return x >= w - overlayStats.touch.cornerSize and y <= overlayStats.touch.cornerSize
 end
 
----Checks if the given touch position is inside the overlay area
----@param x number The x-coordinate of the touch
----@param y number The y-coordinate of the touch
----@return boolean insideOverlay True if touch is inside the overlay area
+---检测给定的触摸位置是否落在浮层区域内
+---@param x number 触摸点的 x 坐标
+---@param y number 触摸点的 y 坐标
+---@return boolean insideOverlay 若触摸位于浮层区域内则为 true
 local function isTouchInsideOverlay(x, y)
   local area = overlayStats.touch.overlayArea
   return x >= area.x and x <= area.x + area.width and
          y >= area.y and y <= area.y + area.height
 end
 
----Processes touch input for the overlay toggle
----@param x number The x-coordinate of the touch
----@param y number The y-coordinate of the touch
+---处理用于切换浮层的触摸输入
+---@param x number 触摸点的 x 坐标
+---@param y number 触摸点的 y 坐标
 ---@return nil
 local function handleTouch(x, y)
   local currentTime = love.timer.getTime()
   local timeSinceLastTap = currentTime - overlayStats.touch.lastTapTime
 
   if overlayStats.isActive and isTouchInsideOverlay(x, y) then
-    -- Handle touches inside the active overlay
+    -- 处理落在已激活浮层内部的触摸
     if timeSinceLastTap <= overlayStats.touch.doubleTapThreshold then
-      -- Double tap inside overlay - toggle VSync
+      -- 在浮层内双击——切换 VSync
       toggleVSync()
       overlayStats.touch.lastTapTime = 0
     else
       overlayStats.touch.lastTapTime = currentTime
     end
   elseif isTouchInCorner(x, y) then
-    -- Original behavior for corner taps to toggle overlay
+    -- 原始行为：点按右上角切换浮层
     if timeSinceLastTap <= overlayStats.touch.doubleTapThreshold then
       toggleOverlay()
       overlayStats.touch.lastTapTime = 0
@@ -164,25 +193,25 @@ local function handleTouch(x, y)
   end
 end
 
--- Public API
+-- 公共 API
 
----Initializes the overlay stats module
+---初始化性能统计浮层模块
 ---@return nil
 function overlayStats.load()
-  -- Initialize moving averages
+  -- 初始化滑动平均样本缓冲
   for k, _ in pairs(overlayStats.metrics) do
     overlayStats.metrics[k] = {}
   end
-  -- Get initial vsync state from LÖVE config
+  -- 从 LÖVE 配置读取初始 VSync 状态
   overlayStats.vsyncEnabled = love.window.getVSync() == 1
 
-  -- Get graphics feature support information
+  -- 获取图形特性支持信息
   local supported = love.graphics.getSupported()
   overlayStats.supportedFeatures.glsl3 = supported.glsl3
   overlayStats.supportedFeatures.pixelShaderHighp = supported.pixelshaderhighp
 end
 
----Draws the performance overlay when active
+---当浮层激活时绘制性能浮层
 ---@return nil
 function overlayStats.draw()
   if not overlayStats.isActive then
@@ -191,15 +220,15 @@ function overlayStats.draw()
 
   local averages = getAverages()
 
-  -- Set up overlay drawing
+  -- 准备浮层绘制
   love.graphics.push("all")
   local font = love.graphics.setNewFont(16)
 
-  -- Calculate dynamic width based on renderer version and other content
-  local padding = 20    -- 10px padding on each side
-  local baseWidth = 280 -- Minimum width
+  -- 根据渲染器版本等内容动态计算宽度
+  local padding = 20    -- 左右各留 10px 内边距
+  local baseWidth = 280 -- 最小宽度
 
-  -- Check width needed for the renderer version text
+  -- 计算渲染器版本文本所需宽度
   local versionTextWidth = font:getWidth(string.format("%s", overlayStats.renderInfo.version))
   local rendererInfoWidth = font:getWidth(
     string.format("Renderer: %s (%s)", overlayStats.renderInfo.name, overlayStats.renderInfo.vendor)
@@ -208,11 +237,11 @@ function overlayStats.draw()
     overlayStats.sysInfo.os .. " " .. overlayStats.sysInfo.arch .. ": " .. overlayStats.sysInfo.cpuCount .. "x CPU"
   )
 
-  -- Calculate rectangle width based on the widest content
+  -- 根据最宽的内容计算矩形宽度
   local contentWidth = math.max(versionTextWidth, rendererInfoWidth, systemInfoWidth, baseWidth)
   local rectangleWidth = contentWidth + padding
 
-  -- Update the overlay area dimensions for touch detection
+  -- 更新浮层区域尺寸，供触摸检测使用
   overlayStats.touch.overlayArea = {
     x = 10,
     y = 10,
@@ -220,12 +249,12 @@ function overlayStats.draw()
     height = 340
   }
 
-  -- Draw background rectangle with dynamic width
+  -- 以动态宽度绘制背景矩形
   love.graphics.setColor(0, 0, 0, 0.8)
   love.graphics.rectangle("fill", 10, 10, rectangleWidth, 340)
   love.graphics.setColor(0.678, 0.847, 0.902, 1)
 
-  -- System Info
+  -- 系统信息
   local y = 20
   love.graphics.print(
     overlayStats.sysInfo.os .. " " .. overlayStats.sysInfo.arch .. ": " .. overlayStats.sysInfo.cpuCount .. "x CPU",
@@ -245,29 +274,29 @@ function overlayStats.draw()
   love.graphics.print(string.format("%s", overlayStats.renderInfo.version), 20, y)
   y = y + 30
 
-  -- Safely handle frameTime with nil/zero checks
+  -- 安全处理帧耗时（对 nil/零做检查）
   love.graphics.setColor(0, 1, 0, 1)
   local frameTime = averages.frameTime or 0
   local fps = frameTime > 0 and (1 / frameTime) or 0
   love.graphics.print(string.format("FPS: %.1f (%.1fms)", fps, frameTime * 1000), 20, y)
   y = y + 20
 
-  -- Reset canvases each frame
+  -- 每帧刷新 Canvas 数量
   local currentCanvases = love.graphics.getStats().canvases
   love.graphics.print(string.format("Canvases: %d", currentCanvases), 20, y)
   y = y + 20
 
-  -- Reset canvas switches each frame
+  -- 每帧刷新 Canvas 切换次数
   local currentCanvasSwitches = love.graphics.getStats().canvasswitches
   love.graphics.print(string.format("Canvas Switches: %d", currentCanvasSwitches), 20, y)
   y = y + 20
 
-  -- Reset shader switches each frame
+  -- 每帧刷新着色器切换次数
   local currentShaderSwitches = love.graphics.getStats().shaderswitches
   love.graphics.print(string.format("Shader Switches: %d", currentShaderSwitches), 20, y)
   y = y + 20
 
-  -- Reset draw calls each frame
+  -- 每帧刷新 Draw Call 数量
   local currentDrawCalls = love.graphics.getStats().drawcalls
   local currentDrawCallsBatched = love.graphics.getStats().drawcallsbatched
   love.graphics.print(string.format("Draw Calls: %d (%d batched)", currentDrawCalls, currentDrawCallsBatched), 20, y)
@@ -276,40 +305,40 @@ function overlayStats.draw()
   love.graphics.print(string.format("RAM: %.1f MB", averages.memoryUsage / 1024), 20, y)
   y = y + 20
 
-  -- Reset texture memory usage  each frame
+  -- 每帧刷新纹理显存占用
   local currentTextureMemory = love.graphics.getStats().texturememory / (1024 * 1024)
   love.graphics.print(string.format("VRAM: %.1f MB", currentTextureMemory), 20, y)
   y = y + 20
 
-  -- Reset images each frame
+  -- 每帧刷新图像数量
   local currentImages = love.graphics.getStats().images
   love.graphics.print(string.format("Images: %d", currentImages), 20, y)
   y = y + 20
 
-  -- Display particle count
+  -- 显示粒子数量
   local currentParticleCount = averages.particleCount or 0
   love.graphics.print(string.format("Particles: %d", math.floor(currentParticleCount)), 20, y)
   y = y + 20
 
-  -- Add GLSL 3 support indicator
+  -- 添加 GLSL 3 支持指示（支持为绿色，不支持为红色）
   love.graphics.setColor(overlayStats.supportedFeatures.glsl3 and { 0, 1, 0, 1 } or { 1, 0, 0, 1 })
   love.graphics.print(string.format("GLSL 3: %s", overlayStats.supportedFeatures.glsl3 and "Yes" or "No"), 20, y)
   y = y + 20
 
-  -- Add pixel shader highp support indicator
+  -- 添加像素着色器 highp 支持指示
   love.graphics.setColor(overlayStats.supportedFeatures.pixelShaderHighp and { 0, 1, 0, 1 } or { 1, 0, 0, 1 })
   love.graphics.print(string.format("Pixel Shader highp: %s", overlayStats.supportedFeatures.pixelShaderHighp and "Yes" or "No"), 20, y)
   y = y + 20
 
-  -- Add VSync status with color indication
+  -- 添加 VSync 状态（用颜色区分开/关）
   love.graphics.setColor(overlayStats.vsyncEnabled and { 0, 1, 0, 1 } or { 1, 0, 0, 1 })
   love.graphics.print(string.format("VSync: %s", overlayStats.vsyncEnabled and "ON" or "OFF"), 20, y)
 
   love.graphics.pop()
 end
 
----Updates performance metrics and handles controller input
----@param dt number Delta time since the last frame
+---更新性能指标并处理手柄输入
+---@param dt number 距上一帧的时间
 ---@return nil
 function overlayStats.update(dt)
   handleController()
@@ -322,7 +351,7 @@ function overlayStats.update(dt)
     overlayStats.currentSample = 1
   end
 
-  -- Get draw call stats before any drawing occurs
+  -- 在任何绘制发生之前获取 Draw Call 统计
   local stats = love.graphics.getStats()
   overlayStats.metrics.canvases[overlayStats.currentSample] = stats.canvasses
   overlayStats.metrics.canvasSwitches[overlayStats.currentSample] = stats.canvasswitches
@@ -334,7 +363,7 @@ function overlayStats.update(dt)
   overlayStats.metrics.memoryUsage[overlayStats.currentSample] = collectgarbage("count")
   overlayStats.metrics.frameTime[overlayStats.currentSample] = dt
 
-  -- Calculate total particle count from all registered systems
+  -- 累加所有已注册粒子系统的粒子总数
   local totalParticles = 0
   for ps, _ in pairs(overlayStats.particleSystems) do
     if ps:isActive() then
@@ -344,8 +373,8 @@ function overlayStats.update(dt)
   overlayStats.metrics.particleCount[overlayStats.currentSample] = totalParticles
 end
 
----Processes keyboard input for the overlay
----@param key string The key that was pressed
+---处理浮层的键盘输入
+---@param key string 被按下的按键
 ---@return nil
 function overlayStats.handleKeyboard(key)
   if key == "f3" then
@@ -355,27 +384,27 @@ function overlayStats.handleKeyboard(key)
   end
 end
 
----Handles touch press events for toggling the overlay
----@param id any Touch ID from LÖVE
----@param x number The x-coordinate of the touch
----@param y number The y-coordinate of the touch
----@param dx number The horizontal component of the touch press
----@param dy number The vertical component of the touch press
----@param pressure number The pressure of the touch
+---处理用于切换浮层的触摸按下事件
+---@param id any LÖVE 提供的触摸 ID
+---@param x number 触摸点的 x 坐标
+---@param y number 触摸点的 y 坐标
+---@param dx number 触摸按下的水平分量
+---@param dy number 触摸按下的垂直分量
+---@param pressure number 触摸压力
 ---@return nil
 function overlayStats.handleTouch(id, x, y, dx, dy, pressure)
   handleTouch(x, y)
 end
 
----Register a particle system to be tracked
----@param particleSystem love.ParticleSystem The particle system to register
+---注册一个要被跟踪统计的粒子系统
+---@param particleSystem love.ParticleSystem 要注册的粒子系统
 ---@return nil
 function overlayStats.registerParticleSystem(particleSystem)
   overlayStats.particleSystems[particleSystem] = true
 end
 
----Unregister a particle system from tracking
----@param particleSystem love.ParticleSystem The particle system to unregister
+---从跟踪统计中注销一个粒子系统
+---@param particleSystem love.ParticleSystem 要注销的粒子系统
 ---@return nil
 function overlayStats.unregisterParticleSystem(particleSystem)
   overlayStats.particleSystems[particleSystem] = nil
